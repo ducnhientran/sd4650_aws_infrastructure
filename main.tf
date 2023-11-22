@@ -4,88 +4,51 @@ provider "aws" {
   secret_key = var.secret_key
 }
 
-data "aws_availability_zones" "available" {}
-
-# 1. Create vpc
-resource "aws_vpc" "main-vpc" {
-  cidr_block = "10.0.0.0/16"
-
-  tags = {
-    Name = "sd4650-vpc"
+data "aws_availability_zones" "available" {
+  filter {
+    name   = "opt-in-status"
+    values = ["opt-in-not-required"]
   }
 }
 
-# 2. Create Internet Gateway
-resource "aws_internet_gateway" "gw" {
-  vpc_id = aws_vpc.main-vpc.id
+locals {
+  cluster_name ="sd4650-devops-eks"
+}
 
-  tags = {
-    Name = "main"
+# VPC
+module "vpc" {
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "5.0.0"
+
+  name = "sd4650-devops-vpc"
+  cidr = "10.0.0.0/16"
+  azs  = slice(data.aws_availability_zones.available.names, 0, 3)
+
+  private_subnets = ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
+  public_subnets  = ["10.0.4.0/24"]
+
+  enable_nat_gateway   = true
+  single_nat_gateway   = false
+  enable_dns_hostnames = true
+
+
+
+  public_subnet_tags = {
+    "kubernetes.io/cluster/${local.cluster_name}" = "shared"
+    "kubernetes.io/role/elb"                      = 1
+  }
+
+  private_subnet_tags = {
+    "kubernetes.io/cluster/${local.cluster_name}" = "shared"
+    "kubernetes.io/role/internal-elb"             = 1
   }
 }
 
-# 3. Create Custom Route Table
-resource "aws_route_table" "main-route-table" {
-  vpc_id = aws_vpc.main-vpc.id
-
-  route {
-    cidr_block = var.zero-address
-    gateway_id = aws_internet_gateway.gw.id
-  }
-
-  route {
-    ipv6_cidr_block = "::/0"
-    gateway_id      = aws_internet_gateway.gw.id
-  }
-
-  tags = {
-    Name = "main"
-  }
-}
-
-# 4. Create subnets
-resource "aws_subnet" "subnet-1" {
-  vpc_id            = aws_vpc.main-vpc.id
-  cidr_block        = var.subnet_prefix[0].cidr_block
-  availability_zone = data.aws_availability_zones.available.names[0]
-
-  tags = {
-    Name = var.subnet_prefix[0].name
-  }
-}
-
-resource "aws_subnet" "subnet-2" {
-  vpc_id            = aws_vpc.main-vpc.id
-  cidr_block        = var.subnet_prefix[1].cidr_block
-  availability_zone = data.aws_availability_zones.available.names[1]
-
-  tags = {
-    Name = var.subnet_prefix[1].name
-  }
-}
-
-resource "aws_subnet" "subnet-3" {
-  vpc_id            = aws_vpc.main-vpc.id
-  cidr_block        = var.subnet_prefix[2].cidr_block
-  availability_zone = data.aws_availability_zones.available.names[2]
-
-  tags = {
-    Name = var.subnet_prefix[2].name
-  }
-}
-
-
-# 5. Associate subnet with Route Table
-resource "aws_route_table_association" "subnrt" {
-  subnet_id      = aws_subnet.subnet-1.id
-  route_table_id = aws_route_table.main-route-table.id
-}
-
-# 6. Create Security Group to allow port 22, 80, 443, 8080
+#Create Security Group to allow port 22, 80, 443, 8080
 resource "aws_security_group" "allow_web" {
   name        = "allow_web_traffic"
   description = "Allow web inboundd traffic"
-  vpc_id      = aws_vpc.main-vpc.id
+  vpc_id      = module.vpc.vpc_id
 
   ingress {
     description = "HTTPS from VPC"
@@ -131,24 +94,24 @@ resource "aws_security_group" "allow_web" {
   }
 }
 
-# 7. Create a network interface with an ip in the subnet that was created in step 4
+# Create a network interface
 resource "aws_network_interface" "web-server-nic" {
-  subnet_id       = aws_subnet.subnet-1.id
-  private_ips     = ["10.0.1.50"]
+  subnet_id       = module.vpc.public_subnets[0]
+  private_ips     = ["10.0.4.50"]
   security_groups = [aws_security_group.allow_web.id]
 }
 
-# 8. Assign an elastic IP to the network interface created in step 7
+# Assign an elastic IP
 resource "aws_eip" "one" {
   network_interface         = aws_network_interface.web-server-nic.id
-  associate_with_private_ip = "10.0.1.50"
-  depends_on                = [aws_internet_gateway.gw]
+  associate_with_private_ip = "10.0.4.50"
+
 }
 
-# 9. Create Ubuntu server and install/enable apache2
+# Create Ubuntu server
 resource "aws_instance" "web-server" {
-  ami               = "ami-078c1149d8ad719a7"
-  instance_type     = "t2.micro"
+  ami               = "ami-0df4b2961410d4cff" 
+  instance_type     = "t3.small"
   availability_zone = data.aws_availability_zones.available.names[0]
   key_name          = "sd4650_ubuntu_keypair"
   depends_on        = [aws_eip.one, aws_network_interface.web-server-nic]
@@ -171,7 +134,7 @@ resource "aws_instance" "web-server" {
                     sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
                 sudo apt-get update
                 sudo apt-get install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin -y
-                sudo docker run hello-world
+                sudo usermod -aG docker ubuntu
                 EOF
 
   tags = {
@@ -179,7 +142,7 @@ resource "aws_instance" "web-server" {
   }
 }
 
-# 10. Create ECR
+#ECR
 resource "aws_ecr_repository" "frontend_repo" {
   name                 = "frontend"
   image_tag_mutability = var.immutable_ecr_repositories ? "IMMUTABLE" : "MUTABLE"
@@ -308,10 +271,7 @@ resource "aws_ecr_repository_policy" "backend_repo_policy" {
   EOF
 }
 
-# 11. Create EKS
-locals {
-  cluster_name = "sd4650-devops-eks"
-}
+#EKS
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
   version = "19.15.3"
@@ -319,22 +279,24 @@ module "eks" {
   cluster_name    = local.cluster_name
   cluster_version = "1.27"
 
-  vpc_id                         = aws_vpc.main-vpc.id
-  subnet_ids                     = [aws_subnet.subnet-2.id, aws_subnet.subnet-3.id]
+  vpc_id                         = module.vpc.vpc_id
+  subnet_ids                     = module.vpc.private_subnets
   cluster_endpoint_public_access = true
+  cluster_endpoint_private_access= false
 
   eks_managed_node_group_defaults = {
     ami_type = "AL2_x86_64"
+
   }
 
   eks_managed_node_groups = {
     one = {
       name = "node-group-1"
 
-      instance_types = ["t2.nano"]
+      instance_types = ["t3.small"]
 
       min_size     = 1
-      max_size     = 2
+      max_size     = 3
       desired_size = 1
     }
   }
@@ -358,7 +320,7 @@ module "irsa-ebs-csi" {
 resource "aws_eks_addon" "ebs-csi" {
   cluster_name             = module.eks.cluster_name
   addon_name               = "aws-ebs-csi-driver"
-  addon_version            = "v1.24.1-eksbuild.1"
+  addon_version            = "v1.25.0-eksbuild.1"
   service_account_role_arn = module.irsa-ebs-csi.iam_role_arn
   tags = {
     "eks_addon" = "ebs-csi"

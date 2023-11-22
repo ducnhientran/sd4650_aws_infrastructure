@@ -15,7 +15,7 @@ variable "immutable_ecr_repositories" {
 }
 
 variable "region" {
-  default = "ap-southeast-1"
+  default = "ap-southeast-2"
 }
 
 variable "access_key" {
@@ -28,4 +28,8 @@ variable "secret_key" {
 
 variable "subnet_prefix" {
   description = "Cidr block for subnet"
+}
+
+variable "cluster_addons" {
+  description = "Cluster Addons"
 }

@@ -13,5 +13,16 @@ subnet_prefix = [
   }
 ]
 
-access_key = "AKIAXPOBRGRW6DVVNVFO"
-secret_key = "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"
+cluster_addons = {
+  coredns = {
+    resolve_conflicts_on_update = "OVERWRITE"
+  }
+  kube-proxy = {}
+  vpc-cni = {
+    resolve_conflicts_on_update = "OVERWRITE"
+  }
+}
+
+
+access_key = "AKIAXPOBRGRWYWQDZT5H"
+secret_key = "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"
